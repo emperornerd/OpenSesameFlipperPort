@@ -1,25 +1,8 @@
 /*
- * OpenSesame GUI with Save/Replay Features for Flipper Zero
+ * OpenSesame GUI for Flipper Zero
  *
- * Integrates persistent storage and replay mode from the "Copy" version
- * into the working GUI structure.
- * --- FIXES (v13) ---
- * 1. Removed 66-bit "Genie" rolling code target as requested.
- * 2. Added two missing 9-bit Chamberlain models from Samy's original.
- * 3. Expanded save slots to 4 (one for each model).
- * 4. Updated Universal mode to cycle all 4 targets.
- * 5. All logic (Replay, Save, UI) updated for the new 4-target list.
- * * --- MODIFICATIONS (User Request) ---
- * 1. Renamed "Universal (All)" to "All Known Models" (Index 4).
- * 2. Added new "Generic (Brute)" mode (Index 5).
- * 3. GREATLY EXPANDED Generic (Brute) targets to 39 (from 18).
- * 4. Updated de Bruijn worker to support both "All Known" and "Generic (Brute)".
- * 5. Updated UI and max_code counter to reflect these changes.
- * 6. Fixed tx_ctx->position compiler error.
- * 7. Removed header/footer from "View Saved Codes" and fixed text Y-position.
- * 8. Rephrased UI warnings to be less restrictive.
- * 9. Implemented full target looping for Compatibility and Stream modes.
- * 10. Updated Attack View to show correct progress for all modes.
+ * Implements SubGHz brute-force attacks for various fixed-code
+ * garage door systems.
  */
 
 #include <furi.h>
@@ -40,7 +23,6 @@
 #define CODE_BUFFER_SIZE 320 // Approx 10-sec rolling buffer
 #define WORKER_EVENT_STOP (1 << 0)
 #define PAYLOADS_PER_CHUNK 16
-// #define STORAGE_FILE_PATH EXT_PATH("subghz/opensesame_saved_codes.txt")
 
 // --- Attack Mode Definitions ---
 typedef enum {
@@ -80,8 +62,6 @@ typedef struct {
 
 const OpenSesameTarget opensesame_targets[] = {
     {
-        // Samy's Model #1
-        // Index 0
         .name = "Stanley/Linear 310M",
         .frequency = 310000000,
         .bits = 10,
@@ -93,21 +73,17 @@ const OpenSesameTarget opensesame_targets[] = {
         .b2 = 0x0,
     },
     {
-        // Based on Samy's Model #4 (NSCD)
-        // Index 1
         .name = "MegaCode 318M",
         .frequency = 318000000,
         .bits = 8,
         .length = 4,
         .trinary = true,
         .encoding_desc = "Trinary 8-bit",
-        .b0 = 0x020100, // Note: Using different bit encodings
-        .b1 = 0x03fd00, // from Samy's 9-bit NSCD
+        .b0 = 0x020100,
+        .b1 = 0x03fd00,
         .b2 = 0x03fdfe,
     },
     {
-        // Samy's Model #2
-        // Index 2
         .name = "Chamberlain 390M",
         .frequency = 390000000,
         .bits = 9,
@@ -119,8 +95,6 @@ const OpenSesameTarget opensesame_targets[] = {
         .b2 = 0x0,
     },
     {
-        // Samy's Model #3
-        // Index 3
         .name = "Chamberlain 315M",
         .frequency = 315000000,
         .bits = 9,
@@ -131,9 +105,7 @@ const OpenSesameTarget opensesame_targets[] = {
         .b1 = 0xe,
         .b2 = 0x0,
     },
-    // --- MODIFIED: Renamed "Universal (All)" to "All Known Models" ---
     {
-        // Index 4
         .name = "All Known Models",
         .frequency = 310000000, // Default freq, will be overridden
         .bits = 10, // Default bits, will be overridden
@@ -144,9 +116,7 @@ const OpenSesameTarget opensesame_targets[] = {
         .b1 = 0xe,
         .b2 = 0x0,
     },
-    // --- MODIFIED: Renamed "Universal (Brute)" to "Generic (Brute)" ---
     {
-        // Index 5
         .name = "Generic (Brute)",
         .frequency = 310000000, // Default freq, will be overridden
         .bits = 10, // Default bits, will be overridden
@@ -157,286 +127,472 @@ const OpenSesameTarget opensesame_targets[] = {
         .b1 = 0xe,
         .b2 = 0x0,
     },
-    // --- MODIFIED: Internal Brute-Force Targets (Not user-selectable) ---
-    // These are added for the Generic (Brute) mode, ordered by likelyhood.
-    { 
-        // Index 6
+    {
+        .name = "European (Brute)",
+        .frequency = 433920000, // Default freq, will be overridden
+        .bits = 10, // Default bits, will be overridden
+        .length = 4,
+        .trinary = false,
+        .encoding_desc = "Targets 433/868 MHz",
+        .b0 = 0x8,
+        .b1 = 0xe,
+        .b2 = 0x0,
+    },
+    // Internal Brute-Force Targets (Not user-selectable)
+    {
         .name = "Internal Brute 300M 10b",
         .frequency = 300000000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 7
+    {
         .name = "Internal Brute 315M 8b",
         .frequency = 315000000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 8
+    {
         .name = "Internal Brute 390M 8b",
         .frequency = 390000000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 9
+    {
         .name = "Internal Brute 390M 10b",
         .frequency = 390000000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 10
+    {
         .name = "Internal Brute 315M 10b",
         .frequency = 315000000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 11
+    {
         .name = "Internal Brute 310M 8b",
         .frequency = 310000000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 12
+    {
         .name = "Internal Brute 300M 8b",
         .frequency = 300000000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 13
+    {
         .name = "Internal Brute 315M 12b",
         .frequency = 315000000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 14
+    {
         .name = "Internal Brute 390M 12b",
         .frequency = 390000000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 15
+    {
         .name = "Internal Brute 310M 12b",
         .frequency = 310000000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 16
+    {
         .name = "Internal Brute 300M 12b",
         .frequency = 300000000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 17
+    {
         .name = "Internal Brute 318M 8b Bin",
         .frequency = 318000000,
         .bits = 8, .length = 4, .trinary = false, // Binary, not trinary
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 18
+    {
         .name = "Internal Brute 318M 10b",
         .frequency = 318000000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 19
+    {
         .name = "Internal Brute 318M 12b",
         .frequency = 318000000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 20
+    {
         .name = "Internal Brute 303M 8b",
         .frequency = 303875000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 21
+    {
         .name = "Internal Brute 303M 10b",
         .frequency = 303875000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 22
+    {
         .name = "Internal Brute 433M 8b",
         .frequency = 433920000,
         .bits = 8, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 23
+    {
         .name = "Internal Brute 433M 10b",
         .frequency = 433920000,
         .bits = 10, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    // --- NEWLY ADDED TARGETS (21) ---
-    { 
-        // Index 24
+    {
         .name = "Internal Brute 303M 12b",
         .frequency = 303875000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 25
+    {
         .name = "Internal Brute 433M 12b",
         .frequency = 433920000,
         .bits = 12, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 26
+    {
         .name = "Internal Brute 310M 9b",
         .frequency = 310000000,
         .bits = 9, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 27
+    {
         .name = "Internal Brute 300M 9b",
         .frequency = 300000000,
         .bits = 9, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 28
+    {
         .name = "Internal Brute 318M 9b",
         .frequency = 318000000,
         .bits = 9, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 29
+    {
         .name = "Internal Brute 303M 9b",
         .frequency = 303875000,
         .bits = 9, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 30
+    {
         .name = "Internal Brute 433M 9b",
         .frequency = 433920000,
         .bits = 9, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 31
+    {
         .name = "Internal Brute 310M 11b",
         .frequency = 310000000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 32
+    {
         .name = "Internal Brute 315M 11b",
         .frequency = 315000000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 33
+    {
         .name = "Internal Brute 390M 11b",
         .frequency = 390000000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 34
+    {
         .name = "Internal Brute 300M 11b",
         .frequency = 300000000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 35
+    {
         .name = "Internal Brute 318M 11b",
         .frequency = 318000000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 36
+    {
         .name = "Internal Brute 433M 11b",
         .frequency = 433920000,
         .bits = 11, .length = 4, .trinary = false,
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 37
+    {
         .name = "Internal Brute 310M 14b",
         .frequency = 310000000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 38
+    {
         .name = "Internal Brute 315M 14b",
         .frequency = 315000000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 39
+    {
         .name = "Internal Brute 390M 14b",
         .frequency = 390000000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 40
+    {
         .name = "Internal Brute 300M 14b",
         .frequency = 300000000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 41
+    {
         .name = "Internal Brute 318M 14b",
         .frequency = 318000000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 42
+    {
         .name = "Internal Brute 433M 14b",
         .frequency = 433920000,
         .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
-    { 
-        // Index 43
+    {
         .name = "Internal Brute 315M 9b Tri",
         .frequency = 315000000,
         .bits = 9, .length = 4, .trinary = true, // de Bruijn incompatible (n > 8)
         .encoding_desc = "Internal", .b0 = 0x020100, .b1 = 0x03fd00, .b2 = 0x03fdfe,
     },
-    { 
-        // Index 44
+    {
         .name = "Internal Brute 390M 9b Tri",
         .frequency = 390000000,
         .bits = 9, .length = 4, .trinary = true, // de Bruijn incompatible (n > 8)
         .encoding_desc = "Internal", .b0 = 0x020100, .b1 = 0x03fd00, .b2 = 0x03fdfe,
     },
+    {
+        .name = "Internal Brute 300M 13b",
+        .frequency = 300000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 310M 13b",
+        .frequency = 310000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 315M 13b",
+        .frequency = 315000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 318M 13b",
+        .frequency = 318000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 390M 13b",
+        .frequency = 390000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 433M 13b",
+        .frequency = 433920000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 303M 11b",
+        .frequency = 303875000,
+        .bits = 11, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 303M 14b",
+        .frequency = 303875000,
+        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 8b",
+        .frequency = 868350000,
+        .bits = 8, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 9b",
+        .frequency = 868350000,
+        .bits = 9, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 10b",
+        .frequency = 868350000,
+        .bits = 10, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 11b",
+        .frequency = 868350000,
+        .bits = 11, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 12b",
+        .frequency = 868350000,
+        .bits = 12, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 13b",
+        .frequency = 868350000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 868M 14b",
+        .frequency = 868350000,
+        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 8b",
+        .frequency = 288000000,
+        .bits = 8, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 9b",
+        .frequency = 288000000,
+        .bits = 9, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 10b",
+        .frequency = 288000000,
+        .bits = 10, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 11b",
+        .frequency = 288000000,
+        .bits = 11, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 12b",
+        .frequency = 288000000,
+        .bits = 12, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 13b",
+        .frequency = 288000000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Brute 288M 14b",
+        .frequency = 288000000,
+        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 8b",
+        .frequency = 433920000,
+        .bits = 8, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 9b",
+        .frequency = 433920000,
+        .bits = 9, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 10b",
+        .frequency = 433920000,
+        .bits = 10, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 11b",
+        .frequency = 433920000,
+        .bits = 11, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 12b",
+        .frequency = 433920000,
+        .bits = 12, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 13b",
+        .frequency = 433920000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 433M 14b",
+        .frequency = 433920000,
+        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 8b",
+        .frequency = 868350000,
+        .bits = 8, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 9b",
+        .frequency = 868350000,
+        .bits = 9, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 10b",
+        .frequency = 868350000,
+        .bits = 10, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 11b",
+        .frequency = 868350000,
+        .bits = 11, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 12b",
+        .frequency = 868350000,
+        .bits = 12, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 13b",
+        .frequency = 868350000,
+        .bits = 13, .length = 4, .trinary = false,
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
+    {
+        .name = "Internal Euro 868M 14b",
+        .frequency = 868350000,
+        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
+        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
+    },
 };
-// --- MODIFIED: Define visible count vs total count ---
-const uint8_t opensesame_target_count = 6; // User-selectable targets (0-5)
-const uint8_t opensesame_total_target_count = COUNT_OF(opensesame_targets); // All targets (45)
+// Define visible count vs total count
+const uint8_t opensesame_target_count = 7; // User-selectable targets (0-6)
+const uint8_t opensesame_total_target_count = COUNT_OF(opensesame_targets); // All targets (82)
 
 // --- OOK Preset ---
 static const uint8_t opensesame_ook_preset_data[] __attribute__((aligned(4))) = {
@@ -453,7 +609,7 @@ typedef enum {
     // ViewIdSavedCodes,
     ViewIdAttack,
     ViewIdAbout,
-    ViewIdDirections,
+    // ViewIdDirections,
 } OpenSesameViewId;
 
 // --- Submenu Items ---
@@ -464,7 +620,7 @@ typedef enum {
     SubmenuIndexShowConfig,
     // SubmenuIndexCodeBuffer,
     // SubmenuIndexSavedCodes,
-    SubmenuIndexDirections,
+    // SubmenuIndexDirections,
     SubmenuIndexAbout,
     SubmenuIndexExit,
 } SubmenuIndex;
@@ -495,10 +651,9 @@ typedef struct {
     AttackMode attack_mode;
     uint8_t about_page; // 0-3: Thank You, About, Usage, License
     
-    // Code buffer and saved codes
+    // Code buffer
     CodeBuffer code_buffer;
     // uint8_t selected_buffer_index;
-    // uint32_t saved_code[4]; // FIXED: One per target (0, 1, 2, 3)
     
     // Attack state
     FuriThread* worker_thread;
@@ -506,7 +661,7 @@ typedef struct {
     // volatile bool save_requested;
     volatile uint32_t current_code;
     volatile uint32_t codes_transmitted;
-    volatile uint8_t current_attack_target_idx; // For saving in universal mode
+    volatile uint8_t current_attack_target_idx;
     uint32_t max_code;
     const char* attack_animation_chars;
     uint8_t attack_animation_index;
@@ -514,8 +669,6 @@ typedef struct {
 
 // --- Forward Declarations ---
 static void opensesame_push_code_to_buffer(OpenSesameApp* app, uint32_t code);
-// static void opensesame_load_codes(OpenSesameApp* app);
-// static void opensesame_save_codes(OpenSesameApp* app);
 static void about_widget_setup(OpenSesameApp* app);
 
 // --- Code Buffer Management ---
@@ -534,71 +687,6 @@ static void opensesame_push_code_to_buffer(OpenSesameApp* app, uint32_t code) {
     
     buffer->codes[next_idx] = code;
 }
-
-// --- Persistence (SD Card) ---
-/*
-static void opensesame_load_codes(OpenSesameApp* app) {
-    if(app == NULL) return;
-    
-    Storage* storage = furi_record_open(RECORD_STORAGE);
-    if(storage == NULL) {
-        FURI_LOG_E("OpenSesame", "Failed to open storage");
-        return;
-    }
-    
-    File* file = storage_file_alloc(storage);
-    if(file == NULL) {
-        FURI_LOG_E("OpenSesame", "Failed to allocate file");
-        furi_record_close(RECORD_STORAGE);
-        return;
-    }
-
-    if(storage_file_open(file, STORAGE_FILE_PATH, FSAM_READ, FSOM_OPEN_EXISTING)) {
-        size_t bytes_read = storage_file_read(file, app->saved_code, sizeof(app->saved_code));
-        if(bytes_read != sizeof(app->saved_code)) {
-            FURI_LOG_W("OpenSesame", "Save file size mismatch, resetting");
-            memset(app->saved_code, 0, sizeof(app->saved_code));
-        }
-    } else {
-        FURI_LOG_I("OpenSesame", "No save file found");
-        memset(app->saved_code, 0, sizeof(app->saved_code));
-    }
-
-    storage_file_close(file);
-    storage_file_free(file);
-    furi_record_close(RECORD_STORAGE);
-}
-
-static void opensesame_save_codes(OpenSesameApp* app) {
-    if(app == NULL) return;
-    
-    Storage* storage = furi_record_open(RECORD_STORAGE);
-    if(storage == NULL) {
-        FURI_LOG_E("OpenSesame", "Failed to open storage");
-        return;
-    }
-    
-    File* file = storage_file_alloc(storage);
-    if(file == NULL) {
-        FURI_LOG_E("OpenSesame", "Failed to allocate file");
-        furi_record_close(RECORD_STORAGE);
-        return;
-    }
-
-    storage_common_mkdir(storage, EXT_PATH("subghz"));
-
-    if(storage_file_open(file, STORAGE_FILE_PATH, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        size_t bytes_written = storage_file_write(file, app->saved_code, sizeof(app->saved_code));
-        if(bytes_written == sizeof(app->saved_code)) {
-            FURI_LOG_I("OpenSesame", "Codes saved successfully");
-        }
-    }
-
-    storage_file_close(file);
-    storage_file_free(file);
-    furi_record_close(RECORD_STORAGE);
-}
-*/
 
 // --- Payload Generation ---
 static void opensesame_generate_payload(
@@ -686,7 +774,6 @@ static void opensesame_transmit_raw(uint32_t frequency, uint8_t* buffer, size_t 
     furi_hal_subghz_set_frequency_and_path(frequency);
 
     if(furi_hal_subghz_start_async_tx(opensesame_tx_callback, &tx_ctx)) {
-        // --- FIX: Replaced -> with . because tx_ctx is a struct, not a pointer ---
         while(tx_ctx.position < size * 8) {
             if(furi_thread_flags_get() & WORKER_EVENT_STOP) {
                 furi_hal_subghz_stop_async_tx();
@@ -733,31 +820,33 @@ static size_t opensesame_append_digit_pattern(
 
 // --- Worker Functions ---
 
-// --- MODIFIED: Added target loop for meta-modes ---
 static int32_t opensesame_worker_compatibility(OpenSesameApp* app, const OpenSesameTarget* target) {
     UNUSED(target); // We use app->current_target_index
     
-    // --- NEW: Target loop logic ---
+    // Target loop logic
     bool is_all_known = (app->current_target_index == 4);
     bool is_generic_brute = (app->current_target_index == 5);
+    bool is_european_brute = (app->current_target_index == 6);
 
     uint8_t target_start = 0;
     uint8_t target_end = 0;
 
     if(is_generic_brute) {
         target_start = 0;
-        target_end = opensesame_total_target_count - 1;
+        target_end = 67; // Index of last generic target
     } else if(is_all_known) {
         target_start = 0;
         target_end = 3; 
+    } else if(is_european_brute) {
+        target_start = 68; // Index of first European target
+        target_end = opensesame_total_target_count - 1; // 81
     } else {
         target_start = app->current_target_index;
         target_end = app->current_target_index;
     }
-    // --- End new logic ---
 
     for(uint8_t target_idx = target_start; target_idx <= target_end; target_idx++) {
-        if(target_idx == 4 || target_idx == 5) continue; // Skip meta-targets
+        if(target_idx == 4 || target_idx == 5 || target_idx == 6) continue; // Skip meta-targets
         if(furi_thread_flags_get() & WORKER_EVENT_STOP) break;
 
         const OpenSesameTarget* current_target = &opensesame_targets[target_idx];
@@ -804,8 +893,8 @@ static int32_t opensesame_worker_compatibility(OpenSesameApp* app, const OpenSes
         free(payload_buffer);
 
         // Delay between targets in meta-modes
-        if((is_all_known || is_generic_brute) && target_idx < target_end) {
-            if(target_idx + 1 != 4 && target_idx + 1 != 5) {
+        if((is_all_known || is_generic_brute || is_european_brute) && target_idx < target_end) {
+            if(target_idx + 1 != 4 && target_idx + 1 != 5 && target_idx + 1 != 6) {
                 furi_delay_ms(100);
             }
         }
@@ -813,31 +902,33 @@ static int32_t opensesame_worker_compatibility(OpenSesameApp* app, const OpenSes
     return 0;
 }
 
-// --- MODIFIED: Added target loop for meta-modes ---
 static int32_t opensesame_worker_stream(OpenSesameApp* app, const OpenSesameTarget* target) {
     UNUSED(target); // We use app->current_target_index
 
-    // --- NEW: Target loop logic ---
+    // Target loop logic
     bool is_all_known = (app->current_target_index == 4);
     bool is_generic_brute = (app->current_target_index == 5);
+    bool is_european_brute = (app->current_target_index == 6);
 
     uint8_t target_start = 0;
     uint8_t target_end = 0;
 
     if(is_generic_brute) {
         target_start = 0;
-        target_end = opensesame_total_target_count - 1;
+        target_end = 67; // Index of last generic target
     } else if(is_all_known) {
         target_start = 0;
         target_end = 3; 
+    } else if(is_european_brute) {
+        target_start = 68; // Index of first European target
+        target_end = opensesame_total_target_count - 1; // 81
     } else {
         target_start = app->current_target_index;
         target_end = app->current_target_index;
     }
-    // --- End new logic ---
 
     for(uint8_t target_idx = target_start; target_idx <= target_end; target_idx++) {
-        if(target_idx == 4 || target_idx == 5) continue; // Skip meta-targets
+        if(target_idx == 4 || target_idx == 5 || target_idx == 6) continue; // Skip meta-targets
         if(furi_thread_flags_get() & WORKER_EVENT_STOP) break;
 
         const OpenSesameTarget* current_target = &opensesame_targets[target_idx];
@@ -902,8 +993,8 @@ static int32_t opensesame_worker_stream(OpenSesameApp* app, const OpenSesameTarg
         free(single_payload);
 
         // Delay between targets in meta-modes
-        if((is_all_known || is_generic_brute) && target_idx < target_end) {
-            if(target_idx + 1 != 4 && target_idx + 1 != 5) {
+        if((is_all_known || is_generic_brute || is_european_brute) && target_idx < target_end) {
+            if(target_idx + 1 != 4 && target_idx + 1 != 5 && target_idx + 1 != 6) {
                 furi_delay_ms(100);
             }
         }
@@ -916,17 +1007,21 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
     
     // Check which meta-mode is active, or if it's a single target
     bool is_all_known = (app->current_target_index == 4);
-    bool is_generic_brute = (app->current_target_index == 5); // Renamed
+    bool is_generic_brute = (app->current_target_index == 5);
+    bool is_european_brute = (app->current_target_index == 6);
 
     uint8_t target_start = 0;
     uint8_t target_end = 0;
 
-    if(is_generic_brute) { // Renamed
+    if(is_generic_brute) {
         target_start = 0;
-        target_end = opensesame_total_target_count - 1; // 0-44
+        target_end = 67; // Index of last generic target
     } else if(is_all_known) {
         target_start = 0;
         target_end = 3; // The 4 known models
+    } else if(is_european_brute) {
+        target_start = 68; // Index of first European target
+        target_end = opensesame_total_target_count - 1; // 81
     } else { // Single target
         target_start = app->current_target_index;
         target_end = app->current_target_index;
@@ -935,8 +1030,8 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
     // app->codes_transmitted is reset in submenu callback
     
     for(uint8_t target_idx = target_start; target_idx <= target_end; target_idx++) {
-        // NEW: Skip the meta-targets themselves
-        if(target_idx == 4 || target_idx == 5) continue; 
+        // Skip the meta-targets themselves
+        if(target_idx == 4 || target_idx == 5 || target_idx == 6) continue; 
         
         if(furi_thread_flags_get() & WORKER_EVENT_STOP) break;
         
@@ -955,7 +1050,7 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
         if((!current_target->trinary && n > 13) || (current_target->trinary && n > 8)) {
             FURI_LOG_E("OpenSesame", "Target '%s' (%d bits) too large for de Bruijn, skipping.",
                 current_target->name, n);
-            if(!is_all_known && !is_generic_brute) { // Renamed
+            if(!is_all_known && !is_generic_brute && !is_european_brute) {
                 return -1;
             }
             continue; 
@@ -1082,9 +1177,9 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
         FURI_LOG_I("OpenSesame", "Completed target %d", target_idx);
         
         // Delay between targets in meta-modes
-        if((is_all_known || is_generic_brute) && target_idx < target_end) { // Renamed
+        if((is_all_known || is_generic_brute || is_european_brute) && target_idx < target_end) {
             // Don't delay if the next target is a meta-target we're skipping
-            if(target_idx + 1 != 4 && target_idx + 1 != 5) {
+            if(target_idx + 1 != 4 && target_idx + 1 != 5 && target_idx + 1 != 6) {
                 furi_delay_ms(100);
             }
         }
@@ -1093,49 +1188,6 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
     FURI_LOG_I("OpenSesame", "de Bruijn attack completed");
     return 0;
 }
-
-/*
-static int32_t opensesame_worker_replay(OpenSesameApp* app, const OpenSesameTarget* target) {
-    // FIXED: Check if user selected a meta-target (index 4 or 5)
-    if(app->current_target_index >= 4) {
-        FURI_LOG_E("OpenSesame", "Replay invalid for 'All Known' or 'Generic'. Select a specific target.");
-        return -1;
-    }
-
-    uint32_t code_to_replay = app->saved_code[app->current_target_index];
-
-    if(code_to_replay == 0) {
-        FURI_LOG_W("OpenSesame", "No saved code for this target");
-        return -1;
-    }
-
-    size_t total_bits_per_payload = target->bits * target->length;
-    size_t payload_size_bytes = (total_bits_per_payload + 7) / 8;
-    
-    uint8_t* payload_buffer = malloc(payload_size_bytes);
-    if(payload_buffer == NULL) {
-        FURI_LOG_E("OpenSesame", "Failed to allocate payload buffer");
-        return -1;
-    }
-
-    app->current_code = code_to_replay;
-    app->max_code = 5; // For display
-    app->codes_transmitted = 0; // For display
-
-    opensesame_generate_payload(code_to_replay, target, payload_buffer, payload_size_bytes);
-
-    for(int i = 0; i < 5; i++) {
-        if(furi_thread_flags_get() & WORKER_EVENT_STOP) break;
-        app->codes_transmitted++;
-        opensesame_push_code_to_buffer(app, code_to_replay);
-        opensesame_transmit_raw(target->frequency, payload_buffer, payload_size_bytes);
-        furi_delay_ms(50);
-    }
-
-    free(payload_buffer);
-    return 0;
-}
-*/
 
 // --- Worker Thread ---
 static int32_t opensesame_worker_thread(void* context) {
@@ -1147,9 +1199,10 @@ static int32_t opensesame_worker_thread(void* context) {
     app->code_buffer.head = 0;
     app->code_buffer.count = 0;
 
-    // --- MODIFIED: max_code calculation for all modes ---
+    // max_code calculation
     bool is_all_known = (app->current_target_index == 4);
     bool is_generic_brute = (app->current_target_index == 5);
+    bool is_european_brute = (app->current_target_index == 6);
     
     if(is_all_known) {
         app->max_code = 0;
@@ -1172,9 +1225,9 @@ static int32_t opensesame_worker_thread(void* context) {
 
     } else if (is_generic_brute) {
         app->max_code = 0;
-        // NEW: Loop over *all* targets, skipping meta-targets
-        for(uint8_t i = 0; i < opensesame_total_target_count; i++) {
-            if(i == 4 || i == 5) continue; // Skip meta-targets
+        // Loop over *all generic* targets
+        for(uint8_t i = 0; i <= 67; i++) { // 0 to 67
+            if(i == 4 || i == 5 || i == 6) continue; // Skip meta-targets
             
             const OpenSesameTarget* t = &opensesame_targets[i];
             const uint8_t n = t->bits;
@@ -1191,6 +1244,26 @@ static int32_t opensesame_worker_thread(void* context) {
         }
         FURI_LOG_I("OpenSesame", "Generic Brute mode, aggregate max_code: %lu", app->max_code);
 
+    } else if (is_european_brute) {
+        app->max_code = 0;
+        // Loop over *all european* targets
+        for(uint8_t i = 68; i < opensesame_total_target_count; i++) { // 68 to 81
+            // No need to skip meta-targets here
+            const OpenSesameTarget* t = &opensesame_targets[i];
+            const uint8_t n = t->bits;
+            const uint8_t k = t->trinary ? 3 : 2;
+            
+            // --- Logic to filter targets based on mode ---
+            if((!t->trinary && n > 13) || (t->trinary && n > 8)) {
+                if(app->attack_mode == AttackModeDeBruijn) continue; // Skip if too big for de Bruijn
+            }
+            if((!t->trinary && n > 31) || (t->trinary && n > 19)) {
+                 continue; // Skip if too large for pow()
+            }
+            app->max_code += (uint32_t)pow(k, n);
+        }
+        FURI_LOG_I("OpenSesame", "European Brute mode, aggregate max_code: %lu", app->max_code);
+
     } else {
         // Single Target
         const OpenSesameTarget* target = &opensesame_targets[app->current_target_index];
@@ -1204,7 +1277,6 @@ static int32_t opensesame_worker_thread(void* context) {
             app->max_code = (uint32_t)pow(k, n);
         }
     }
-    // --- End of max_code calculation ---
 
     const OpenSesameTarget* target = &opensesame_targets[app->current_target_index];
     int32_t result = 0;
@@ -1219,39 +1291,10 @@ static int32_t opensesame_worker_thread(void* context) {
     case AttackModeDeBruijn:
         result = opensesame_worker_debruijn(app, target);
         break;
-    /*
-    case AttackModeReplay:
-        result = opensesame_worker_replay(app, target);
-        break;
-    */
     default:
         result = -1;
         break;
     }
-
-    // --- Save logic ---
-    /*
-    if(app->save_requested) {
-        uint8_t target_to_save = app->current_attack_target_idx;
-
-        // FIXED: Ensure target is valid (0-3)
-        if(target_to_save < 4 && app->code_buffer.count > 0) {
-            
-            // Get the *oldest* code from the buffer (head)
-            uint32_t oldest_idx = app->code_buffer.head;
-            uint32_t code_to_save = app->code_buffer.codes[oldest_idx];
-            
-            app->saved_code[target_to_save] = code_to_save;
-            opensesame_save_codes(app);
-            FURI_LOG_I("OpenSesame", "Saved code 0x%lX (from ~10s ago) for target %d", code_to_save, target_to_save);
-        
-        } else {
-            FURI_LOG_W("OpenSesame", "Save requested, but no code in buffer or invalid target index (%d)", target_to_save);
-        }
-        app->save_requested = false;
-    }
-    */
-    // --- End of save logic ---
 
     app->is_attacking = false;
     return result;
@@ -1331,7 +1374,6 @@ static void attack_mode_widget_setup(OpenSesameApp* app) {
         false);
 }
 
-// --- MODIFIED: Updated target widget text for new modes ---
 static void target_widget_setup(OpenSesameApp* app) {
     widget_reset(app->target_widget);
 
@@ -1346,20 +1388,26 @@ static void target_widget_setup(OpenSesameApp* app) {
     
     // "All Known Models" (Index 4)
     if(app->current_target_index == 4) {
-        // --- MODIFIED: Rephrased warning ---
         offset += snprintf(info_text + offset, sizeof(info_text) - offset,
             "Cycles all 4 known targets\n"
             "Usually most effective in\n"
             "Full de Bruijn mode\n\n");
-    // "Generic (Brute)" (Index 5) - Renamed
+    // "Generic (Brute)" (Index 5)
     } else if(app->current_target_index == 5) {
-         // --- MODIFIED: Rephrased warning ---
          offset += snprintf(info_text + offset, sizeof(info_text) - offset,
             "Cycles known models then\n"
             "brute-forces generic\n"
             "keyspaces. VERY LONG.\n"
             "Usually most effective\n"
             "in Full de Bruijn mode.\n\n");
+    // "European (Brute)" (Index 6)
+    } else if(app->current_target_index == 6) {
+         offset += snprintf(info_text + offset, sizeof(info_text) - offset,
+            "Targets EU frequencies\n"
+            "433.92MHz & 868.35MHz\n"
+            "WARNING: 288/868MHz is\n"
+            "not legal for TX in US.\n"
+            "Demo use only.\n\n");
     // Specific Targets (Index 0-3)
     } else {
         offset += snprintf(info_text + offset, sizeof(info_text) - offset,
@@ -1369,14 +1417,6 @@ static void target_widget_setup(OpenSesameApp* app) {
             (target->frequency % 1000000) / 1000,
             target->encoding_desc,
             target->bits);
-        
-        /*
-        if(app->saved_code[app->current_target_index] != 0) {
-            offset += snprintf(info_text + offset, sizeof(info_text) - offset,
-                "Saved: 0x%lX\n\n",
-                app->saved_code[app->current_target_index]);
-        }
-        */
     }
     
     snprintf(info_text + offset, sizeof(info_text) - offset,
@@ -1390,7 +1430,6 @@ static void target_widget_setup(OpenSesameApp* app) {
         false);
 }
 
-// --- MODIFIED: Attack View progress logic ---
 static void attack_view_draw_callback(Canvas* canvas, void* model) {
     if(canvas == NULL || model == NULL) return;
     
@@ -1404,17 +1443,10 @@ static void attack_view_draw_callback(Canvas* canvas, void* model) {
     canvas_set_font(canvas, FontSecondary);
     
     char info[64];
-    bool is_meta_mode = (app->current_target_index == 4 || app->current_target_index == 5);
+    bool is_meta_mode = (app->current_target_index == 4 || app->current_target_index == 5 || app->current_target_index == 6);
 
-    /*
-    if(app->attack_mode == AttackModeReplay) {
-        snprintf(info, sizeof(info), "Code: 0x%lX", app->current_code);
-        canvas_draw_str_aligned(canvas, 64, 20, AlignCenter, AlignTop, info);
-        snprintf(info, sizeof(info), "Sent: %lu / %lu", app->codes_transmitted, app->max_code);
-        canvas_draw_str_aligned(canvas, 64, 32, AlignCenter, AlignTop, info);
-    
-    } else*/ if(app->attack_mode == AttackModeDeBruijn || is_meta_mode) {
-        // De Bruijn mode OR any meta-mode (All Known, Generic)
+    if(app->attack_mode == AttackModeDeBruijn || is_meta_mode) {
+        // De Bruijn mode OR any meta-mode (All Known, Generic, European)
         snprintf(info, sizeof(info), "Codes: %lu / %lu", app->codes_transmitted, app->max_code);
         canvas_draw_str_aligned(canvas, 64, 20, AlignCenter, AlignTop, info);
         
@@ -1449,17 +1481,10 @@ static void attack_view_draw_callback(Canvas* canvas, void* model) {
     
     if(app->is_attacking) {
         canvas_set_font(canvas, FontSecondary);
-        /*
-        if(app->save_requested) {
-            canvas_draw_str(canvas, 5, 63, "Saving... [BACK] Stop");
-        } else {
-            canvas_draw_str(canvas, 5, 63, "[OK] Save [BACK] Stop");
-        }
-        */
-        canvas_draw_str(canvas, 5, 63, "[BACK] Stop");
+        canvas_draw_str(canvas, 5, 63, "[OK] Rstrt [BACK] Stop");
     } else {
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 5, 63, "Complete! Press BACK");
+        canvas_draw_str(canvas, 5, 63, "[OK] Retry [BACK] Exit");
     }
 }
 
@@ -1472,7 +1497,6 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
         if(event->key == InputKeyBack) {
             if(app->is_attacking && app->worker_thread != NULL) {
                 FURI_LOG_I("OpenSesame", "Stopping attack via BACK");
-                // app->save_requested = false;
                 
                 FuriThreadId thread_id = furi_thread_get_id(app->worker_thread);
                 if(thread_id != NULL) {
@@ -1488,27 +1512,63 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
             }
             
             app->is_attacking = false;
-            // app->save_requested = false;
             
             view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdMenu);
             return true;
         } 
-        /*
         else if(event->key == InputKeyOk) {
-            if(app->is_attacking && !app->save_requested) {
-                FURI_LOG_I("OpenSesame", "Save requested");
-                app->save_requested = true;
-                
+            if(app->is_attacking) {
+                // --- RESTART LOGIC ---
+                FURI_LOG_I("OpenSesame", "Restarting attack via OK");
+
+                // 1. Stop current worker
                 if(app->worker_thread != NULL) {
                     FuriThreadId thread_id = furi_thread_get_id(app->worker_thread);
                     if(thread_id != NULL) {
                         furi_thread_flags_set(thread_id, WORKER_EVENT_STOP);
                     }
+                    furi_delay_ms(100); // Wait for flag to be processed
+                    
+                    // 2. Join/free current worker
+                    furi_thread_join(app->worker_thread);
+                    furi_thread_free(app->worker_thread);
+                    app->worker_thread = NULL;
+                }
+                
+                // 3. Start new worker (same as opensesame_submenu_callback)
+                app->is_attacking = true;
+                app->current_code = 0;
+                app->codes_transmitted = 0;
+                app->attack_animation_index = 0;
+                app->worker_thread = furi_thread_alloc_ex(
+                    "OpenSesameWorker", 4096, opensesame_worker_thread, app);
+                if(app->worker_thread != NULL) {
+                    furi_thread_start(app->worker_thread);
+                } else {
+                    FURI_LOG_E("OpenSesame", "Failed to allocate worker thread");
+                    app->is_attacking = false;
+                }
+                
+            } else { // !app->is_attacking
+                // --- RETRY LOGIC ---
+                FURI_LOG_I("OpenSesame", "Retrying attack via OK");
+
+                // Start new worker (same as opensesame_submenu_callback)
+                app->is_attacking = true;
+                app->current_code = 0;
+                app->codes_transmitted = 0;
+                app->attack_animation_index = 0;
+                app->worker_thread = furi_thread_alloc_ex(
+                    "OpenSesameWorker", 4096, opensesame_worker_thread, app);
+                if(app->worker_thread != NULL) {
+                    furi_thread_start(app->worker_thread);
+                } else {
+                    FURI_LOG_E("OpenSesame", "Failed to allocate worker thread");
+                    app->is_attacking = false;
                 }
             }
             return true;
         }
-        */
     }
 
     return false;
@@ -1538,7 +1598,6 @@ static void attack_view_exit_callback(void* context) {
     if(app->worker_thread != NULL) {
         if(app->is_attacking) {
             FURI_LOG_W("OpenSesame", "Force stopping worker thread on exit");
-            // app->save_requested = false;
             
             FuriThreadId thread_id = furi_thread_get_id(app->worker_thread);
             if(thread_id != NULL) {
@@ -1553,141 +1612,11 @@ static void attack_view_exit_callback(void* context) {
     }
 
     app->is_attacking = false;
-    // app->save_requested = false;
 }
-
-// --- Code Buffer View ---
-/*
-static void buffer_view_draw_callback(Canvas* canvas, void* model) {
-    if(canvas == NULL || model == NULL) return;
-    
-    OpenSesameApp* app = *((OpenSesameApp**)model);
-    CodeBuffer* buffer = &app->code_buffer;
-    
-    canvas_clear(canvas);
-    canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, "Save Code");
-    
-    canvas_set_font(canvas, FontSecondary);
-    
-    if(buffer->count == 0) {
-        canvas_draw_str_aligned(canvas, 64, 30, AlignCenter, AlignTop, "No codes in buffer");
-    } else {
-        char info[32];
-        snprintf(info, sizeof(info), "Recent codes (%lu):", buffer->count);
-        canvas_draw_str(canvas, 5, 18, info);
-        
-        for(uint8_t i = 0; i < 3 && i < buffer->count; i++) {
-            uint32_t idx = (buffer->head + buffer->count - 1 - i) % CODE_BUFFER_SIZE;
-            char line[32];
-            
-            if(i == app->selected_buffer_index) {
-                snprintf(line, sizeof(line), "> 0x%lX", buffer->codes[idx]);
-            } else {
-                snprintf(line, sizeof(line), "  0x%lX", buffer->codes[idx]);
-            }
-            canvas_draw_str(canvas, 5, 30 + (i * 10), line);
-        }
-    }
-    
-    canvas_draw_str(canvas, 5, 63, "[U/D] Scroll [OK] Save");
-}
-
-static bool buffer_view_input_callback(InputEvent* event, void* context) {
-    if(context == NULL || event == NULL) return false;
-    
-    OpenSesameApp* app = (OpenSesameApp*)context;
-    CodeBuffer* buffer = &app->code_buffer;
-    if(event->type != InputTypeShort) return false;
-
-    if(event->key == InputKeyUp) {
-        if(app->selected_buffer_index < buffer->count - 1) {
-            app->selected_buffer_index++;
-            view_commit_model(app->buffer_view, true);
-        }
-        return true;
-    } else if(event->key == InputKeyDown) {
-        if(app->selected_buffer_index > 0) {
-            app->selected_buffer_index--;
-            view_commit_model(app->buffer_view, true);
-        }
-        return true;
-    } else if(event->key == InputKeyOk) {
-        if(buffer->count > 0 && app->selected_buffer_index < buffer->count) {
-            uint32_t buffer_idx = (buffer->head + buffer->count - 1 - app->selected_buffer_index) % CODE_BUFFER_SIZE;
-            uint32_t code_to_save = buffer->codes[buffer_idx];
-
-            // Check for meta-targets (index 4 or 5)
-            if(app->current_target_index < 4) {
-                app->saved_code[app->current_target_index] = code_to_save;
-                opensesame_save_codes(app);
-
-                FURI_LOG_I("OpenSesame", "Saved code 0x%lX for target %d", 
-                    code_to_save, app->current_target_index);
-                
-                view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdSavedCodes);
-                return true;
-            } else {
-                FURI_LOG_W("OpenSesame", "Cannot save from buffer in 'All Known' or 'Generic' mode");
-            }
-        }
-        view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdMenu);
-    } else if(event->key == InputKeyBack) {
-        view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdMenu);
-        return true;
-    }
-
-    return false;
-}
-*/
-
-// --- MODIFIED: Saved Codes View (Header/Footer Removed, Y-Pos Fixed) ---
-/*
-static void saved_codes_view_draw_callback(Canvas* canvas, void* model) {
-    if(canvas == NULL || model == NULL) return;
-    
-    OpenSesameApp* app = *((OpenSesameApp**)model);
-    
-    canvas_clear(canvas);
-    canvas_set_font(canvas, FontSecondary);
-    
-    char line_buffer[48];
-    // Loop over the 4 saveable targets (0-3)
-    for(uint8_t i = 0; i < 4; i++) {
-        const OpenSesameTarget* target = &opensesame_targets[i];
-        
-        char short_name[16];
-        snprintf(short_name, sizeof(short_name), "%s", target->name);
-        if(strlen(target->name) > 12) {
-            short_name[9] = '.';
-            short_name[10] = '.';
-            short_name[11] = '\0';
-        }
-        
-        if(app->saved_code[i] != 0) {
-            snprintf(line_buffer, sizeof(line_buffer), "%s: 0x%lX", short_name, app->saved_code[i]);
-        } else {
-            snprintf(line_buffer, sizeof(line_buffer), "%s: None", short_name);
-        }
-        // --- MODIFIED: Adjusted Y-offset to account for removed header ---
-        canvas_draw_str(canvas, 5, 10 + (i * 12), line_buffer); // Start lower down
-    }
-    
-    // --- REMOVED FOOTER ---
-}
-
-static bool saved_codes_view_input_callback(InputEvent* event, void* context) {
-    UNUSED(context);
-    if(event == NULL) return false;
-    if(event->type != InputTypeShort) return false;
-    
-    return false;
-}
-*/
 
 // --- Config View ---
 static void config_widget_setup(OpenSesameApp* app);
-static void directions_widget_setup(OpenSesameApp* app);
+// static void directions_widget_setup(OpenSesameApp* app);
 
 static bool config_input_callback(InputEvent* event, void* context) {
     OpenSesameApp* app = (OpenSesameApp*)context;
@@ -1768,9 +1697,9 @@ static void about_widget_setup(OpenSesameApp* app) {
         // Page 2: Features
         "Features\n\n"
         "- Multiple targets\n"
-        "- 4 attack modes\n"
-        "- Code saving\n"
-        "- Replay function\n\n"
+        "- Multiple attack modes\n"
+        "- Brute-force modes\n"
+        "- Meta-modes\n\n"
         "[L/R] Pages\n"
         "[BACK] Return",
         
@@ -1792,27 +1721,27 @@ static void about_widget_setup(OpenSesameApp* app) {
         false);
 }
 
-static void directions_widget_setup(OpenSesameApp* app) {
-    UNUSED(app);
-    widget_reset(app->directions_widget);
-
-    const char* directions_text =
-        "Quick Start\n\n"
-        "1. Select target\n"
-        "   model\n\n"
-        "2. Choose mode\n\n"
-        "3. Start attack\n\n"
-        "4. Press OK to\n"
-        "   save codes\n\n"
-        "[BACK] Return";
-
-    widget_add_text_box_element(
-        app->directions_widget,
-        0, 0, 128, 64,
-        AlignCenter, AlignTop,
-        directions_text,
-        false);
-}
+//static void directions_widget_setup(OpenSesameApp* app) {
+//    UNUSED(app);
+//    widget_reset(app->directions_widget);
+//
+//    const char* directions_text =
+//        "Quick Start\n\n"
+//        "1. Select target\n"
+//        "   model\n\n"
+//        "2. Choose mode\n\n"
+//        "3. Start attack\n\n"
+//        "4. Press OK to\n"
+//        "   Restart or Retry\n\n"
+//        "[BACK] Return";
+//
+    //widget_add_text_box_element(
+    //    app->directions_widget,
+    //    0, 0, 128, 64,
+    //    AlignCenter, AlignTop,
+    //    directions_text,
+    //    false);
+//}
 
 // --- View Dispatcher Callbacks ---
 static uint32_t opensesame_back_callback(void* context) {
@@ -1835,7 +1764,6 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
         app->current_code = 0;
         app->codes_transmitted = 0;
         app->attack_animation_index = 0;
-        // app->save_requested = false;
         app->worker_thread = furi_thread_alloc_ex(
             "OpenSesameWorker", 4096, opensesame_worker_thread, app);
         if(app->worker_thread != NULL) {
@@ -1858,19 +1786,10 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
         config_widget_setup(app);
         view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdConfig);
         break;
-    /*
-    case SubmenuIndexCodeBuffer:
-        app->selected_buffer_index = 0; // Reset selection
-        view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdCodeBuffer);
-        break;
-    case SubmenuIndexSavedCodes:
-        view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdSavedCodes);
-        break;
-    */
-    case SubmenuIndexDirections:
-        directions_widget_setup(app);
-        view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdDirections);
-        break;
+    //case SubmenuIndexDirections:
+    //    directions_widget_setup(app);
+    //    view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdDirections);
+    //    break;
     case SubmenuIndexAbout:
         app->about_page = 0;
         about_widget_setup(app);
@@ -1893,16 +1812,12 @@ static OpenSesameApp* opensesame_app_alloc() {
     app->current_target_index = 0;
     app->attack_mode = AttackModeDeBruijn;
     app->is_attacking = false;
-    // app->save_requested = false;
     app->worker_thread = NULL;
     app->attack_animation_chars = "|/-\\";
     app->attack_animation_index = 0;
-    // app->selected_buffer_index = 0;
     app->about_page = 0;
     app->codes_transmitted = 0;
     app->current_attack_target_idx = 0;
-
-    // opensesame_load_codes(app);
 
     app->gui = furi_record_open(RECORD_GUI);
     app->view_dispatcher = view_dispatcher_alloc();
@@ -1920,14 +1835,8 @@ static OpenSesameApp* opensesame_app_alloc() {
         opensesame_submenu_callback, app);
     submenu_add_item(app->submenu, "Show Config", SubmenuIndexShowConfig, 
         opensesame_submenu_callback, app);
-    // HIDDEN: Code Buffer
-    // submenu_add_item(app->submenu, "Code Buffer (Save)", SubmenuIndexCodeBuffer, 
-    //     opensesame_submenu_callback, app);
-    // submenu_add_item(app->submenu, "View Saved Codes", SubmenuIndexSavedCodes, 
-    //     opensesame_submenu_callback, app);
-    // HIDDEN: Directions
     // submenu_add_item(app->submenu, "Directions", SubmenuIndexDirections, 
-    //     opensesame_submenu_callback, app);
+    //    opensesame_submenu_callback, app);
     submenu_add_item(app->submenu, "About", SubmenuIndexAbout, 
         opensesame_submenu_callback, app);
     submenu_add_item(app->submenu, "Exit", SubmenuIndexExit, 
@@ -1968,35 +1877,11 @@ static OpenSesameApp* opensesame_app_alloc() {
         widget_get_view(app->about_widget));
 
     // Directions Widget
-    app->directions_widget = widget_alloc();
-    view_set_context(widget_get_view(app->directions_widget), app);
-    view_set_previous_callback(widget_get_view(app->directions_widget), opensesame_back_callback);
-    view_dispatcher_add_view(app->view_dispatcher, ViewIdDirections, 
-        widget_get_view(app->directions_widget));
-
-    /*
-    // Code Buffer View
-    app->buffer_view = view_alloc();
-    view_allocate_model(app->buffer_view, ViewModelTypeLockFree, sizeof(OpenSesameApp*));
-    OpenSesameApp** buffer_model = view_get_model(app->buffer_view);
-    *buffer_model = app;
-    view_set_context(app->buffer_view, app);
-    view_set_draw_callback(app->buffer_view, buffer_view_draw_callback);
-    view_set_input_callback(app->buffer_view, buffer_view_input_callback);
-    view_set_previous_callback(app->buffer_view, opensesame_back_callback);
-    view_dispatcher_add_view(app->view_dispatcher, ViewIdCodeBuffer, app->buffer_view);
-
-    // Saved Codes View
-    app->saved_codes_view = view_alloc();
-    view_allocate_model(app->saved_codes_view, ViewModelTypeLockFree, sizeof(OpenSesameApp*));
-    OpenSesameApp** saved_model = view_get_model(app->saved_codes_view);
-    *saved_model = app;
-    view_set_context(app->saved_codes_view, app);
-    view_set_draw_callback(app->saved_codes_view, saved_codes_view_draw_callback);
-    view_set_input_callback(app->saved_codes_view, saved_codes_view_input_callback);
-    view_set_previous_callback(app->saved_codes_view, opensesame_back_callback);
-    view_dispatcher_add_view(app->view_dispatcher, ViewIdSavedCodes, app->saved_codes_view);
-    */
+    // app->directions_widget = widget_alloc();
+    // view_set_context(widget_get_view(app->directions_widget), app);
+    // view_set_previous_callback(widget_get_view(app->directions_widget), opensesame_back_callback);
+    //view_dispatcher_add_view(app->view_dispatcher, ViewIdDirections, 
+    //    widget_get_view(app->directions_widget));
 
     // Attack View
     app->attack_view = view_alloc();
@@ -2032,20 +1917,16 @@ static void opensesame_app_free(OpenSesameApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAttackMode);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdTargetSelect);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdConfig);
-    // view_dispatcher_remove_view(app->view_dispatcher, ViewIdCodeBuffer);
-    // view_dispatcher_remove_view(app->view_dispatcher, ViewIdSavedCodes);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAttack);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAbout);
-    view_dispatcher_remove_view(app->view_dispatcher, ViewIdDirections);
+    // view_dispatcher_remove_view(app->view_dispatcher, ViewIdDirections);
 
     submenu_free(app->submenu);
     widget_free(app->attack_mode_widget);
     widget_free(app->target_widget);
     widget_free(app->config_widget);
     widget_free(app->about_widget);
-    widget_free(app->directions_widget);
-    // view_free(app->buffer_view);
-    // view_free(app->saved_codes_view);
+    // widget_free(app->directions_widget);
     view_free(app->attack_view);
 
     view_dispatcher_free(app->view_dispatcher);
