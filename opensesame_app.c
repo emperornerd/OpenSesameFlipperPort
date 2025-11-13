@@ -1,3 +1,27 @@
+/*
+ * OpenSesame GUI with Save/Replay Features for Flipper Zero
+ *
+ * Integrates persistent storage and replay mode from the "Copy" version
+ * into the working GUI structure.
+ * --- FIXES (v13) ---
+ * 1. Removed 66-bit "Genie" rolling code target as requested.
+ * 2. Added two missing 9-bit Chamberlain models from Samy's original.
+ * 3. Expanded save slots to 4 (one for each model).
+ * 4. Updated Universal mode to cycle all 4 targets.
+ * 5. All logic (Replay, Save, UI) updated for the new 4-target list.
+ * * --- MODIFICATIONS (User Request) ---
+ * 1. Renamed "Universal (All)" to "All Known Models" (Index 4).
+ * 2. Added new "Generic (Brute)" mode (Index 5).
+ * 3. GREATLY EXPANDED Generic (Brute) targets to 39 (from 18).
+ * 4. Updated de Bruijn worker to support both "All Known" and "Generic (Brute)".
+ * 5. Updated UI and max_code counter to reflect these changes.
+ * 6. Fixed tx_ctx->position compiler error.
+ * 7. Removed header/footer from "View Saved Codes" and fixed text Y-position.
+ * 8. Rephrased UI warnings to be less restrictive.
+ * 9. Implemented full target looping for Compatibility and Stream modes.
+ * 10. Updated Attack View to show correct progress for all modes.
+ */
+
 #include <furi.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
@@ -16,14 +40,14 @@
 #define CODE_BUFFER_SIZE 320 // Approx 10-sec rolling buffer
 #define WORKER_EVENT_STOP (1 << 0)
 #define PAYLOADS_PER_CHUNK 16
-#define STORAGE_FILE_PATH EXT_PATH("subghz/opensesame_saved_codes.txt")
+// #define STORAGE_FILE_PATH EXT_PATH("subghz/opensesame_saved_codes.txt")
 
 // --- Attack Mode Definitions ---
 typedef enum {
     AttackModeCompatibility,
     AttackModeStream,
     AttackModeDeBruijn,
-    AttackModeReplay,
+    // AttackModeReplay,
     AttackModeCount
 } AttackMode;
 
@@ -31,14 +55,14 @@ const char* attack_mode_names[] = {
     "Compatibility",
     "Stream",
     "Full de Bruijn",
-    "Replay Saved"
+    // "Replay Saved"
 };
 
 const char* attack_mode_desc[] = {
     "Slow, reliable\nBest for testing\nOne code at a time",
     "Fast sequential\nMedium speed\nBatch transmission",
     "Optimal sequence\nFastest coverage\nde Bruijn algorithm",
-    "Replay saved code\nTransmit 5 times\nMust save first"
+    // "Replay saved code\nTransmit 5 times\nMust save first"
 };
 
 // --- Target Definitions ---
@@ -425,8 +449,8 @@ typedef enum {
     ViewIdAttackMode,
     ViewIdTargetSelect,
     ViewIdConfig,
-    ViewIdCodeBuffer,
-    ViewIdSavedCodes,
+    // ViewIdCodeBuffer,
+    // ViewIdSavedCodes,
     ViewIdAttack,
     ViewIdAbout,
     ViewIdDirections,
@@ -438,8 +462,8 @@ typedef enum {
     SubmenuIndexAttackMode,
     SubmenuIndexTargetSelect,
     SubmenuIndexShowConfig,
-    SubmenuIndexCodeBuffer,
-    SubmenuIndexSavedCodes,
+    // SubmenuIndexCodeBuffer,
+    // SubmenuIndexSavedCodes,
     SubmenuIndexDirections,
     SubmenuIndexAbout,
     SubmenuIndexExit,
@@ -463,8 +487,8 @@ typedef struct {
     Widget* config_widget;
     Widget* about_widget;
     Widget* directions_widget;
-    View* buffer_view;
-    View* saved_codes_view;
+    // View* buffer_view;
+    // View* saved_codes_view;
     View* attack_view;
 
     uint8_t current_target_index;
@@ -473,13 +497,13 @@ typedef struct {
     
     // Code buffer and saved codes
     CodeBuffer code_buffer;
-    uint8_t selected_buffer_index;
-    uint32_t saved_code[4]; // FIXED: One per target (0, 1, 2, 3)
+    // uint8_t selected_buffer_index;
+    // uint32_t saved_code[4]; // FIXED: One per target (0, 1, 2, 3)
     
     // Attack state
     FuriThread* worker_thread;
     volatile bool is_attacking;
-    volatile bool save_requested;
+    // volatile bool save_requested;
     volatile uint32_t current_code;
     volatile uint32_t codes_transmitted;
     volatile uint8_t current_attack_target_idx; // For saving in universal mode
@@ -490,8 +514,8 @@ typedef struct {
 
 // --- Forward Declarations ---
 static void opensesame_push_code_to_buffer(OpenSesameApp* app, uint32_t code);
-static void opensesame_load_codes(OpenSesameApp* app);
-static void opensesame_save_codes(OpenSesameApp* app);
+// static void opensesame_load_codes(OpenSesameApp* app);
+// static void opensesame_save_codes(OpenSesameApp* app);
 static void about_widget_setup(OpenSesameApp* app);
 
 // --- Code Buffer Management ---
@@ -512,6 +536,7 @@ static void opensesame_push_code_to_buffer(OpenSesameApp* app, uint32_t code) {
 }
 
 // --- Persistence (SD Card) ---
+/*
 static void opensesame_load_codes(OpenSesameApp* app) {
     if(app == NULL) return;
     
@@ -573,6 +598,7 @@ static void opensesame_save_codes(OpenSesameApp* app) {
     storage_file_free(file);
     furi_record_close(RECORD_STORAGE);
 }
+*/
 
 // --- Payload Generation ---
 static void opensesame_generate_payload(
@@ -1068,6 +1094,7 @@ static int32_t opensesame_worker_debruijn(OpenSesameApp* app, const OpenSesameTa
     return 0;
 }
 
+/*
 static int32_t opensesame_worker_replay(OpenSesameApp* app, const OpenSesameTarget* target) {
     // FIXED: Check if user selected a meta-target (index 4 or 5)
     if(app->current_target_index >= 4) {
@@ -1108,6 +1135,7 @@ static int32_t opensesame_worker_replay(OpenSesameApp* app, const OpenSesameTarg
     free(payload_buffer);
     return 0;
 }
+*/
 
 // --- Worker Thread ---
 static int32_t opensesame_worker_thread(void* context) {
@@ -1191,15 +1219,18 @@ static int32_t opensesame_worker_thread(void* context) {
     case AttackModeDeBruijn:
         result = opensesame_worker_debruijn(app, target);
         break;
+    /*
     case AttackModeReplay:
         result = opensesame_worker_replay(app, target);
         break;
+    */
     default:
         result = -1;
         break;
     }
 
     // --- Save logic ---
+    /*
     if(app->save_requested) {
         uint8_t target_to_save = app->current_attack_target_idx;
 
@@ -1219,6 +1250,7 @@ static int32_t opensesame_worker_thread(void* context) {
         }
         app->save_requested = false;
     }
+    */
     // --- End of save logic ---
 
     app->is_attacking = false;
@@ -1338,11 +1370,13 @@ static void target_widget_setup(OpenSesameApp* app) {
             target->encoding_desc,
             target->bits);
         
+        /*
         if(app->saved_code[app->current_target_index] != 0) {
             offset += snprintf(info_text + offset, sizeof(info_text) - offset,
                 "Saved: 0x%lX\n\n",
                 app->saved_code[app->current_target_index]);
         }
+        */
     }
     
     snprintf(info_text + offset, sizeof(info_text) - offset,
@@ -1372,13 +1406,14 @@ static void attack_view_draw_callback(Canvas* canvas, void* model) {
     char info[64];
     bool is_meta_mode = (app->current_target_index == 4 || app->current_target_index == 5);
 
+    /*
     if(app->attack_mode == AttackModeReplay) {
         snprintf(info, sizeof(info), "Code: 0x%lX", app->current_code);
         canvas_draw_str_aligned(canvas, 64, 20, AlignCenter, AlignTop, info);
         snprintf(info, sizeof(info), "Sent: %lu / %lu", app->codes_transmitted, app->max_code);
         canvas_draw_str_aligned(canvas, 64, 32, AlignCenter, AlignTop, info);
     
-    } else if(app->attack_mode == AttackModeDeBruijn || is_meta_mode) {
+    } else*/ if(app->attack_mode == AttackModeDeBruijn || is_meta_mode) {
         // De Bruijn mode OR any meta-mode (All Known, Generic)
         snprintf(info, sizeof(info), "Codes: %lu / %lu", app->codes_transmitted, app->max_code);
         canvas_draw_str_aligned(canvas, 64, 20, AlignCenter, AlignTop, info);
@@ -1414,11 +1449,14 @@ static void attack_view_draw_callback(Canvas* canvas, void* model) {
     
     if(app->is_attacking) {
         canvas_set_font(canvas, FontSecondary);
+        /*
         if(app->save_requested) {
             canvas_draw_str(canvas, 5, 63, "Saving... [BACK] Stop");
         } else {
             canvas_draw_str(canvas, 5, 63, "[OK] Save [BACK] Stop");
         }
+        */
+        canvas_draw_str(canvas, 5, 63, "[BACK] Stop");
     } else {
         canvas_set_font(canvas, FontSecondary);
         canvas_draw_str(canvas, 5, 63, "Complete! Press BACK");
@@ -1434,7 +1472,7 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
         if(event->key == InputKeyBack) {
             if(app->is_attacking && app->worker_thread != NULL) {
                 FURI_LOG_I("OpenSesame", "Stopping attack via BACK");
-                app->save_requested = false;
+                // app->save_requested = false;
                 
                 FuriThreadId thread_id = furi_thread_get_id(app->worker_thread);
                 if(thread_id != NULL) {
@@ -1450,11 +1488,13 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
             }
             
             app->is_attacking = false;
-            app->save_requested = false;
+            // app->save_requested = false;
             
             view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdMenu);
             return true;
-        } else if(event->key == InputKeyOk) {
+        } 
+        /*
+        else if(event->key == InputKeyOk) {
             if(app->is_attacking && !app->save_requested) {
                 FURI_LOG_I("OpenSesame", "Save requested");
                 app->save_requested = true;
@@ -1468,6 +1508,7 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
             }
             return true;
         }
+        */
     }
 
     return false;
@@ -1497,7 +1538,7 @@ static void attack_view_exit_callback(void* context) {
     if(app->worker_thread != NULL) {
         if(app->is_attacking) {
             FURI_LOG_W("OpenSesame", "Force stopping worker thread on exit");
-            app->save_requested = false;
+            // app->save_requested = false;
             
             FuriThreadId thread_id = furi_thread_get_id(app->worker_thread);
             if(thread_id != NULL) {
@@ -1512,10 +1553,11 @@ static void attack_view_exit_callback(void* context) {
     }
 
     app->is_attacking = false;
-    app->save_requested = false;
+    // app->save_requested = false;
 }
 
 // --- Code Buffer View ---
+/*
 static void buffer_view_draw_callback(Canvas* canvas, void* model) {
     if(canvas == NULL || model == NULL) return;
     
@@ -1597,8 +1639,10 @@ static bool buffer_view_input_callback(InputEvent* event, void* context) {
 
     return false;
 }
+*/
 
 // --- MODIFIED: Saved Codes View (Header/Footer Removed, Y-Pos Fixed) ---
+/*
 static void saved_codes_view_draw_callback(Canvas* canvas, void* model) {
     if(canvas == NULL || model == NULL) return;
     
@@ -1639,6 +1683,7 @@ static bool saved_codes_view_input_callback(InputEvent* event, void* context) {
     
     return false;
 }
+*/
 
 // --- Config View ---
 static void config_widget_setup(OpenSesameApp* app);
@@ -1790,7 +1835,7 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
         app->current_code = 0;
         app->codes_transmitted = 0;
         app->attack_animation_index = 0;
-        app->save_requested = false;
+        // app->save_requested = false;
         app->worker_thread = furi_thread_alloc_ex(
             "OpenSesameWorker", 4096, opensesame_worker_thread, app);
         if(app->worker_thread != NULL) {
@@ -1813,6 +1858,7 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
         config_widget_setup(app);
         view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdConfig);
         break;
+    /*
     case SubmenuIndexCodeBuffer:
         app->selected_buffer_index = 0; // Reset selection
         view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdCodeBuffer);
@@ -1820,6 +1866,7 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
     case SubmenuIndexSavedCodes:
         view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdSavedCodes);
         break;
+    */
     case SubmenuIndexDirections:
         directions_widget_setup(app);
         view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdDirections);
@@ -1846,16 +1893,16 @@ static OpenSesameApp* opensesame_app_alloc() {
     app->current_target_index = 0;
     app->attack_mode = AttackModeDeBruijn;
     app->is_attacking = false;
-    app->save_requested = false;
+    // app->save_requested = false;
     app->worker_thread = NULL;
     app->attack_animation_chars = "|/-\\";
     app->attack_animation_index = 0;
-    app->selected_buffer_index = 0;
+    // app->selected_buffer_index = 0;
     app->about_page = 0;
     app->codes_transmitted = 0;
     app->current_attack_target_idx = 0;
 
-    opensesame_load_codes(app);
+    // opensesame_load_codes(app);
 
     app->gui = furi_record_open(RECORD_GUI);
     app->view_dispatcher = view_dispatcher_alloc();
@@ -1876,8 +1923,8 @@ static OpenSesameApp* opensesame_app_alloc() {
     // HIDDEN: Code Buffer
     // submenu_add_item(app->submenu, "Code Buffer (Save)", SubmenuIndexCodeBuffer, 
     //     opensesame_submenu_callback, app);
-    submenu_add_item(app->submenu, "View Saved Codes", SubmenuIndexSavedCodes, 
-        opensesame_submenu_callback, app);
+    // submenu_add_item(app->submenu, "View Saved Codes", SubmenuIndexSavedCodes, 
+    //     opensesame_submenu_callback, app);
     // HIDDEN: Directions
     // submenu_add_item(app->submenu, "Directions", SubmenuIndexDirections, 
     //     opensesame_submenu_callback, app);
@@ -1927,6 +1974,7 @@ static OpenSesameApp* opensesame_app_alloc() {
     view_dispatcher_add_view(app->view_dispatcher, ViewIdDirections, 
         widget_get_view(app->directions_widget));
 
+    /*
     // Code Buffer View
     app->buffer_view = view_alloc();
     view_allocate_model(app->buffer_view, ViewModelTypeLockFree, sizeof(OpenSesameApp*));
@@ -1948,6 +1996,7 @@ static OpenSesameApp* opensesame_app_alloc() {
     view_set_input_callback(app->saved_codes_view, saved_codes_view_input_callback);
     view_set_previous_callback(app->saved_codes_view, opensesame_back_callback);
     view_dispatcher_add_view(app->view_dispatcher, ViewIdSavedCodes, app->saved_codes_view);
+    */
 
     // Attack View
     app->attack_view = view_alloc();
@@ -1983,8 +2032,8 @@ static void opensesame_app_free(OpenSesameApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAttackMode);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdTargetSelect);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdConfig);
-    view_dispatcher_remove_view(app->view_dispatcher, ViewIdCodeBuffer);
-    view_dispatcher_remove_view(app->view_dispatcher, ViewIdSavedCodes);
+    // view_dispatcher_remove_view(app->view_dispatcher, ViewIdCodeBuffer);
+    // view_dispatcher_remove_view(app->view_dispatcher, ViewIdSavedCodes);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAttack);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdAbout);
     view_dispatcher_remove_view(app->view_dispatcher, ViewIdDirections);
@@ -1995,8 +2044,8 @@ static void opensesame_app_free(OpenSesameApp* app) {
     widget_free(app->config_widget);
     widget_free(app->about_widget);
     widget_free(app->directions_widget);
-    view_free(app->buffer_view);
-    view_free(app->saved_codes_view);
+    // view_free(app->buffer_view);
+    // view_free(app->saved_codes_view);
     view_free(app->attack_view);
 
     view_dispatcher_free(app->view_dispatcher);
