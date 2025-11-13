@@ -1,0 +1,12 @@
+appid = "open_sesame"
+
+App(
+    appid=appid,
+    name="OpenSesame",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="opensesame_app_entry",
+    stack_size=2048,
+    sources=["opensesame_app.c"],
+    fap_category="Sub-GHz",
+    icon="icon.png",
+)
