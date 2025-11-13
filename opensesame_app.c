@@ -464,48 +464,6 @@ const OpenSesameTarget opensesame_targets[] = {
         .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
     },
     {
-        .name = "Internal Brute 288M 8b",
-        .frequency = 288000000,
-        .bits = 8, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 9b",
-        .frequency = 288000000,
-        .bits = 9, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 10b",
-        .frequency = 288000000,
-        .bits = 10, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 11b",
-        .frequency = 288000000,
-        .bits = 11, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 12b",
-        .frequency = 288000000,
-        .bits = 12, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 13b",
-        .frequency = 288000000,
-        .bits = 13, .length = 4, .trinary = false,
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
-        .name = "Internal Brute 288M 14b",
-        .frequency = 288000000,
-        .bits = 14, .length = 4, .trinary = false, // de Bruijn incompatible (n > 13)
-        .encoding_desc = "Internal", .b0 = 0x8, .b1 = 0xe, .b2 = 0x0,
-    },
-    {
         .name = "Internal Euro 433M 8b",
         .frequency = 433920000,
         .bits = 8, .length = 4, .trinary = false,
@@ -592,7 +550,7 @@ const OpenSesameTarget opensesame_targets[] = {
 };
 // Define visible count vs total count
 const uint8_t opensesame_target_count = 7; // User-selectable targets (0-6)
-const uint8_t opensesame_total_target_count = COUNT_OF(opensesame_targets); // All targets (82)
+const uint8_t opensesame_total_target_count = COUNT_OF(opensesame_targets); // All targets (75)
 
 // --- OOK Preset ---
 static const uint8_t opensesame_ook_preset_data[] __attribute__((aligned(4))) = {
@@ -1541,7 +1499,7 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
                 app->codes_transmitted = 0;
                 app->attack_animation_index = 0;
                 app->worker_thread = furi_thread_alloc_ex(
-                    "OpenSesameWorker", 4096, opensesame_worker_thread, app);
+                    "OpenSesameWorker", 8192, opensesame_worker_thread, app);
                 if(app->worker_thread != NULL) {
                     furi_thread_start(app->worker_thread);
                 } else {
@@ -1559,7 +1517,7 @@ static bool attack_view_input_callback(InputEvent* event, void* context) {
                 app->codes_transmitted = 0;
                 app->attack_animation_index = 0;
                 app->worker_thread = furi_thread_alloc_ex(
-                    "OpenSesameWorker", 4096, opensesame_worker_thread, app);
+                    "OpenSesameWorker", 8192, opensesame_worker_thread, app);
                 if(app->worker_thread != NULL) {
                     furi_thread_start(app->worker_thread);
                 } else {
@@ -1765,7 +1723,7 @@ static void opensesame_submenu_callback(void* context, uint32_t index) {
         app->codes_transmitted = 0;
         app->attack_animation_index = 0;
         app->worker_thread = furi_thread_alloc_ex(
-            "OpenSesameWorker", 4096, opensesame_worker_thread, app);
+            "OpenSesameWorker", 8192, opensesame_worker_thread, app);
         if(app->worker_thread != NULL) {
             furi_thread_start(app->worker_thread);
             view_dispatcher_switch_to_view(app->view_dispatcher, ViewIdAttack);
