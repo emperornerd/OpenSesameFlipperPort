@@ -1,27 +1,3 @@
-/*
- * OpenSesame GUI with Save/Replay Features for Flipper Zero
- *
- * Integrates persistent storage and replay mode from the "Copy" version
- * into the working GUI structure.
- * --- FIXES (v13) ---
- * 1. Removed 66-bit "Genie" rolling code target as requested.
- * 2. Added two missing 9-bit Chamberlain models from Samy's original.
- * 3. Expanded save slots to 4 (one for each model).
- * 4. Updated Universal mode to cycle all 4 targets.
- * 5. All logic (Replay, Save, UI) updated for the new 4-target list.
- * * --- MODIFICATIONS (User Request) ---
- * 1. Renamed "Universal (All)" to "All Known Models" (Index 4).
- * 2. Added new "Generic (Brute)" mode (Index 5).
- * 3. GREATLY EXPANDED Generic (Brute) targets to 39 (from 18).
- * 4. Updated de Bruijn worker to support both "All Known" and "Generic (Brute)".
- * 5. Updated UI and max_code counter to reflect these changes.
- * 6. Fixed tx_ctx->position compiler error.
- * 7. Removed header/footer from "View Saved Codes" and fixed text Y-position.
- * 8. Rephrased UI warnings to be less restrictive.
- * 9. Implemented full target looping for Compatibility and Stream modes.
- * 10. Updated Attack View to show correct progress for all modes.
- */
-
 #include <furi.h>
 #include <furi_hal.h>
 #include <gui/gui.h>
@@ -1730,8 +1706,7 @@ static void about_widget_setup(OpenSesameApp* app) {
         "Original concept:\n"
         "Samy Kamkar\n"
         "samy.pl/opensesame\n\n"
-        "Based on his 2013\n"
-        "research.\n\n"
+
         "[L/R] Pages\n"
         "[BACK] Return",
         
